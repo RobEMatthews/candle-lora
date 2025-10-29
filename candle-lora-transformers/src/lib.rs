@@ -9,6 +9,7 @@ pub mod falcon;
 pub mod llama;
 pub mod mistral;
 pub mod mpt;
+pub mod qwen;
 pub mod resnet;
 pub mod stable_lm;
 pub mod t5;

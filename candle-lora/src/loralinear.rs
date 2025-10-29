@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Mul, sync::Arc};
 
-use candle_core::{Module, Result, Shape, Tensor};
+use candle_core::{Module, Result, Shape, Tensor, D};
 use candle_nn::{init, Dropout, Linear, VarBuilder};
 use either::Either;
 
@@ -17,6 +17,7 @@ pub struct LoraLinear {
     scale: Option<f64>,
     dropout: Option<Arc<Dropout>>,
     merged: bool,
+    magnitude: Option<Tensor>,  // DoRA magnitude vector (if present, this is a DoRA adapter)
     prefix: String,
     id: usize,
 }
@@ -45,16 +46,46 @@ impl LoraLinear {
         vb: &VarBuilder,
         id: usize,
     ) -> Result<Self> {
-        let a = vb.pp(format!("a{id}")).get_with_hints(
-            (config.rank, linear_config.in_features),
-            "weight",
-            init::DEFAULT_KAIMING_NORMAL,
-        )?;
-        let b = vb.pp(format!("b{id}")).get_with_hints(
-            (linear_config.out_features, config.rank),
-            "weight",
-            init::ZERO,
-        )?;
+        // Try HF format first (lora_A, lora_B), fallback to candle format (a{id}, b{id})
+        let a = vb.pp("lora_A")
+            .get_with_hints(
+                (config.rank, linear_config.in_features),
+                "weight",
+                init::DEFAULT_KAIMING_NORMAL,
+            )
+            .or_else(|_| {
+                // Fallback to candle-lora format
+                vb.pp(format!("a{id}")).get_with_hints(
+                    (config.rank, linear_config.in_features),
+                    "weight",
+                    init::DEFAULT_KAIMING_NORMAL,
+                )
+            })?;
+
+        let b = vb.pp("lora_B")
+            .get_with_hints(
+                (linear_config.out_features, config.rank),
+                "weight",
+                init::ZERO,
+            )
+            .or_else(|_| {
+                // Fallback to candle-lora format
+                vb.pp(format!("b{id}")).get_with_hints(
+                    (linear_config.out_features, config.rank),
+                    "weight",
+                    init::ZERO,
+                )
+            })?;
+
+        // Try to load magnitude vector for DoRA
+        // HF format: lora_magnitude_vector, candle format: magnitude{id}
+        let magnitude = vb.pp("lora_magnitude_vector")
+            .get((linear_config.out_features,), "weight")
+            .or_else(|_| {
+                vb.pp(format!("magnitude{id}"))
+                    .get((linear_config.out_features,), "weight")
+            })
+            .ok(); // Use .ok() to make it optional - if not found, returns None
 
         Ok(LoraLinear {
             old: Arc::new(FrozenLinear::new_from_linear(old)?),
@@ -67,6 +98,7 @@ impl LoraLinear {
             },
             dropout: config.dropout.map(|x| Arc::new(Dropout::new(x))),
             merged: false,
+            magnitude,
             prefix: vb.prefix(),
             id,
         })
@@ -75,15 +107,42 @@ impl LoraLinear {
 
 impl Merge for LoraLinear {
     fn get_delta_weight(&self) -> std::result::Result<Tensor, MergeErrorOrError> {
-        let result = self
+        // Compute BA
+        let ba = self
             .ff_b
             .weight()
             .matmul(self.ff_a.weight())
             .map_err(Either::Right)?;
-        Ok(match self.scale {
-            Some(scale) => result.mul(scale).map_err(Either::Right)?,
-            None => result,
-        })
+
+        // Apply scale
+        let scaled_ba = match self.scale {
+            Some(scale) => ba.mul(scale).map_err(Either::Right)?,
+            None => ba,
+        };
+
+        // If magnitude vector exists, this is DoRA - apply normalization
+        if let Some(ref magnitude) = self.magnitude {
+            // DoRA: W' = m ⊙ (W₀ + BA) / ||W₀ + BA||_c - W₀
+            // First compute W₀ + BA
+            let combined = (self.old.weight() + &scaled_ba).map_err(Either::Right)?;
+
+            // Compute column-wise L2 norm
+            let norm = combined.sqr().map_err(Either::Right)?
+                .sum_keepdim(0).map_err(Either::Right)?
+                .sqrt().map_err(Either::Right)?;
+            // Add epsilon to avoid division by zero
+            let norm = (norm + 1e-8).map_err(Either::Right)?;
+
+            // Normalize column-wise
+            let normalized = combined.broadcast_div(&norm).map_err(Either::Right)?;
+
+            // Apply magnitude scaling and subtract original weight to get delta
+            let scaled = normalized.broadcast_mul(magnitude).map_err(Either::Right)?;
+            (scaled - self.old.weight()).map_err(Either::Right)
+        } else {
+            // Standard LoRA
+            Ok(scaled_ba)
+        }
     }
 
     fn merge_weights(&mut self) -> std::result::Result<(), MergeErrorOrError> {
@@ -123,8 +182,37 @@ impl Module for LoraLinear {
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
         if self.merged {
             self.old.forward(input)
+        } else if let Some(ref magnitude) = self.magnitude {
+            // DoRA forward pass
+            let input_processed = if let Some(ref dropout) = self.dropout {
+                dropout.forward(input, true)?
+            } else {
+                input.clone()
+            };
+
+            // Compute base + LoRA output
+            let base_output = self.old.forward(&input_processed)?;
+            let lora_output = self.ff_b.forward(&self.ff_a.forward(&input_processed)?)?;
+            let lora_output = if let Some(scale) = self.scale {
+                lora_output.mul(scale)?
+            } else {
+                lora_output
+            };
+
+            // Combine outputs
+            let combined = (base_output + lora_output)?;
+
+            // For DoRA: normalize then apply magnitude
+            // This is an approximation for efficiency during inference
+            // Full DoRA would normalize weights, but we normalize outputs instead
+            let norm = combined.sqr()?.sum_keepdim(D::Minus1)?.sqrt()?;
+            let norm = (norm + 1e-8)?;
+            let normalized = combined.broadcast_div(&norm)?;
+
+            // Apply magnitude scaling
+            normalized.broadcast_mul(magnitude)
         } else {
-            //No fan_in_fan_out so no weight.transpose(0,1)
+            // Standard LoRA forward pass
             let mut result = self.old.forward(input)?;
             if let Some(scale) = self.scale {
                 let input_new = if self.dropout.is_some() {
@@ -151,6 +239,13 @@ impl Saveable for LoraLinear {
             self.prefix.clone() + &format!(".b{}.weight", self.id),
             self.ff_b.weight().clone(),
         );
+        // Save magnitude vector if this is a DoRA adapter
+        if let Some(ref magnitude) = self.magnitude {
+            accum.insert(
+                self.prefix.clone() + &format!(".magnitude{}.weight", self.id),
+                magnitude.clone(),
+            );
+        }
     }
 }
 

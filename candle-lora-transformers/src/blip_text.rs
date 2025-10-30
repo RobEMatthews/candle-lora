@@ -466,7 +466,7 @@ impl TextLMPredictionHead {
             vb.pp("decoder"),
             merge,
             lora_config,
-        );
+        )?;
         Ok(Self { transform, decoder })
     }
 }

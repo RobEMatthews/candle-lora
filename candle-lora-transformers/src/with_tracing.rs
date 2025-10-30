@@ -1,17 +1,17 @@
-//! Tracing layers.
+//! Tracing layers with proper LoRA support.
 
 use candle_core::{Module, Result, Tensor};
 use candle_lora::{
-    EmbeddingLayerLike, LinearLayerLike, LoraConfig, LoraEmbeddingConfig, LoraLinearConfig,
+    EmbeddingLayerLike, LoraConfig, LoraEmbedding, LoraEmbeddingConfig, LoraLinear,
+    LoraLinearConfig,
 };
-use candle_lora_macro::{replace_layer_fields, AutoLoraConvert};
-use candle_nn::{Conv2d, VarBuilder};
+use candle_nn::{Conv2d, Linear, VarBuilder};
 use std::sync::Arc;
 
-#[derive(Debug, AutoLoraConvert)]
-#[replace_layer_fields]
+/// Traced LoRA Embedding wrapper
+#[derive(Debug)]
 pub struct TracedLoraEmbedding {
-    inner: Embedding,
+    inner: Arc<LoraEmbedding>,
     span: tracing::Span,
 }
 
@@ -24,35 +24,20 @@ impl TracedLoraEmbedding {
         lora_config: LoraConfig,
     ) -> Result<Self> {
         let embed_config = LoraEmbeddingConfig::new(d1, d2);
-        let inner = candle_nn::embedding(d1, d2, vb.clone())?;
+        let base_embed = candle_nn::embedding(d1, d2, vb.clone())?;
         let span = tracing::span!(tracing::Level::TRACE, "embedding");
 
-        let mut this = Self {
-            inner: Arc::new(inner),
-            span,
-        };
+        let mut lora_embed = LoraEmbedding::new(&base_embed, &embed_config, &lora_config, &vb, 0)?;
 
         if merge {
-            this.get_merged_lora_model(
-                lora_config,
-                &vb.pp("traced_lora_embed"),
-                None,
-                None,
-                None,
-                Some(embed_config),
-            );
-        } else {
-            this.get_lora_model(
-                lora_config,
-                &vb.pp("traced_lora_embed"),
-                None,
-                None,
-                None,
-                Some(embed_config),
-            );
+            use candle_lora::Merge;
+            lora_embed.merge_weights().ok(); // Ignore error if no LoRA weights found
         }
 
-        Ok(this)
+        Ok(Self {
+            inner: Arc::new(lora_embed),
+            span,
+        })
     }
 
     pub fn embeddings(&self) -> &Tensor {
@@ -67,10 +52,10 @@ impl Module for TracedLoraEmbedding {
     }
 }
 
-#[derive(Debug, AutoLoraConvert)]
-#[replace_layer_fields]
+/// Traced LoRA Linear wrapper - properly wraps LoraLinear instead of plain Linear
+#[derive(Debug)]
 pub struct TracedLoraLinear {
-    inner: Linear,
+    inner: Arc<LoraLinear>,
     span: tracing::Span,
 }
 
@@ -81,38 +66,27 @@ impl TracedLoraLinear {
         vb: VarBuilder,
         merge: bool,
         lora_config: LoraConfig,
-    ) -> Self {
-        let linear_config =
-            LoraLinearConfig::new(weights.dims2().unwrap().0, weights.dims2().unwrap().1);
-        let inner = candle_nn::Linear::new(weights, bias);
+    ) -> Result<Self> {
+        let (in_features, out_features) = weights.dims2()?;
+        let linear_config = LoraLinearConfig::new(in_features, out_features);
+        let base_linear = Linear::new(weights, bias);
         let span = tracing::span!(tracing::Level::TRACE, "linear");
-        let mut this = Self {
-            inner: Arc::new(inner),
-            span,
-        };
+
+        let mut lora_linear = LoraLinear::new(&base_linear, &linear_config, &lora_config, &vb, 0)?;
+
         if merge {
-            this.get_merged_lora_model(
-                lora_config,
-                &vb.pp("traced_lora_linear"),
-                Some(linear_config),
-                None,
-                None,
-                None,
-            );
-        } else {
-            this.get_lora_model(
-                lora_config,
-                &vb.pp("traced_lora_linear"),
-                Some(linear_config),
-                None,
-                None,
-                None,
-            );
+            use candle_lora::Merge;
+            lora_linear.merge_weights().ok(); // Ignore error if no LoRA weights found
         }
-        this
+
+        Ok(Self {
+            inner: Arc::new(lora_linear),
+            span,
+        })
     }
 }
 
+/// Create a traced LoRA linear layer
 pub fn linear(
     d1: usize,
     d2: usize,
@@ -121,34 +95,23 @@ pub fn linear(
     lora_config: LoraConfig,
 ) -> Result<TracedLoraLinear> {
     let linear_config = LoraLinearConfig::new(d1, d2);
-    let inner = candle_nn::linear(d1, d2, vb.clone())?;
+    let base_linear = candle_nn::linear(d1, d2, vb.clone())?;
     let span = tracing::span!(tracing::Level::TRACE, "linear");
-    let mut this = TracedLoraLinear {
-        inner: Arc::new(inner),
-        span,
-    };
+
+    let mut lora_linear = LoraLinear::new(&base_linear, &linear_config, &lora_config, &vb, 0)?;
+
     if merge {
-        this.get_merged_lora_model(
-            lora_config,
-            &vb.pp("traced_lora_linear"),
-            Some(linear_config),
-            None,
-            None,
-            None,
-        );
-    } else {
-        this.get_lora_model(
-            lora_config,
-            &vb.pp("traced_lora_linear"),
-            Some(linear_config),
-            None,
-            None,
-            None,
-        );
+        use candle_lora::Merge;
+        lora_linear.merge_weights().ok(); // Ignore error if no LoRA weights found
     }
-    Ok(this)
+
+    Ok(TracedLoraLinear {
+        inner: Arc::new(lora_linear),
+        span,
+    })
 }
 
+/// Create a traced LoRA linear layer without bias
 pub fn linear_no_bias(
     d1: usize,
     d2: usize,
@@ -157,32 +120,20 @@ pub fn linear_no_bias(
     lora_config: LoraConfig,
 ) -> Result<TracedLoraLinear> {
     let linear_config = LoraLinearConfig::new(d1, d2);
-    let inner = candle_nn::linear_no_bias(d1, d2, vb.clone())?;
+    let base_linear = candle_nn::linear_no_bias(d1, d2, vb.clone())?;
     let span = tracing::span!(tracing::Level::TRACE, "linear");
-    let mut this = TracedLoraLinear {
-        inner: Arc::new(inner),
-        span,
-    };
+
+    let mut lora_linear = LoraLinear::new(&base_linear, &linear_config, &lora_config, &vb, 0)?;
+
     if merge {
-        this.get_merged_lora_model(
-            lora_config,
-            &vb.pp("traced_lora_linear"),
-            Some(linear_config),
-            None,
-            None,
-            None,
-        );
-    } else {
-        this.get_lora_model(
-            lora_config,
-            &vb.pp("traced_lora_linear"),
-            Some(linear_config),
-            None,
-            None,
-            None,
-        );
+        use candle_lora::Merge;
+        lora_linear.merge_weights().ok(); // Ignore error if no LoRA weights found
     }
-    Ok(this)
+
+    Ok(TracedLoraLinear {
+        inner: Arc::new(lora_linear),
+        span,
+    })
 }
 
 impl Module for TracedLoraLinear {

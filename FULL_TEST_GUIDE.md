@@ -103,7 +103,7 @@ Example structure (varies by model size):
     ├── config.json            # Model configuration
     └── tokenizer.json         # Tokenizer
 
-./
+./models/
 └── adapter_model.safetensors  # Your LoRA adapter
 ```
 
@@ -118,14 +118,14 @@ Example structure (varies by model size):
 # Basic test
 cargo run --example qwen -- \
     --base-model ./models/qwen3-8b \
-    --adapter adapter_model.safetensors \
+    --adapter ./models/adapter_model.safetensors \
     --rank 128 \
     --alpha 256
 
 # With custom prompt
 cargo run --example qwen -- \
     --base-model ./models/qwen3-8b \
-    --adapter adapter_model.safetensors \
+    --adapter ./models/adapter_model.safetensors \
     --rank 128 \
     --alpha 256 \
     --prompt "Explain quantum computing:" \
@@ -134,7 +134,7 @@ cargo run --example qwen -- \
 # Use merged weights (faster)
 cargo run --example qwen -- \
     --base-model ./models/qwen3-8b \
-    --adapter adapter_model.safetensors \
+    --adapter ./models/adapter_model.safetensors \
     --rank 128 \
     --alpha 256 \
     --merge
@@ -142,7 +142,7 @@ cargo run --example qwen -- \
 # CPU only (slower but works without GPU)
 cargo run --example qwen -- \
     --base-model ./models/qwen3-8b \
-    --adapter adapter_model.safetensors \
+    --adapter ./models/adapter_model.safetensors \
     --rank 128 \
     --alpha 256 \
     --cpu
@@ -185,7 +185,7 @@ Forward pass: output = Linear(merged_weight)
 🚀 Qwen + LoRA Adapter Full Test
 ============================================================
 Base model: ./models/qwen3-8b
-Adapter: adapter_model.safetensors
+Adapter: ./models/adapter_model.safetensors
 LoRA config: rank=128, alpha=256
 Merge weights: false
 ============================================================
@@ -210,7 +210,7 @@ Merge weights: false
    Loading 3 files total:
    - ./models/qwen3-8b/model-00001-of-00002.safetensors
    - ./models/qwen3-8b/model-00002-of-00002.safetensors
-   - adapter_model.safetensors
+   - ./models/adapter_model.safetensors
 ✅ Combined VarBuilder created with base + adapter weights
 
 🔍 Detecting adapter structure...

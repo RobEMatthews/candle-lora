@@ -17,7 +17,7 @@ pub struct LoraLinear {
     scale: Option<f64>,
     dropout: Option<Arc<Dropout>>,
     merged: bool,
-    magnitude: Option<Tensor>,  // DoRA magnitude vector (if present, this is a DoRA adapter)
+    magnitude: Option<Tensor>, // DoRA magnitude vector (if present, this is a DoRA adapter)
     prefix: String,
     id: usize,
 }
@@ -47,7 +47,8 @@ impl LoraLinear {
         id: usize,
     ) -> Result<Self> {
         // Try HF format first (lora_A, lora_B), fallback to candle format (a{id}, b{id})
-        let a = vb.pp("lora_A")
+        let a = vb
+            .pp("lora_A")
             .get_with_hints(
                 (config.rank, linear_config.in_features),
                 "weight",
@@ -62,7 +63,8 @@ impl LoraLinear {
                 )
             })?;
 
-        let b = vb.pp("lora_B")
+        let b = vb
+            .pp("lora_B")
             .get_with_hints(
                 (linear_config.out_features, config.rank),
                 "weight",
@@ -79,7 +81,8 @@ impl LoraLinear {
 
         // Try to load magnitude vector for DoRA
         // HF format: lora_magnitude_vector, candle format: magnitude{id}
-        let magnitude = vb.pp("lora_magnitude_vector")
+        let magnitude = vb
+            .pp("lora_magnitude_vector")
             .get((linear_config.out_features,), "weight")
             .or_else(|_| {
                 vb.pp(format!("magnitude{id}"))
@@ -127,9 +130,13 @@ impl Merge for LoraLinear {
             let combined = (self.old.weight() + &scaled_ba).map_err(Either::Right)?;
 
             // Compute column-wise L2 norm
-            let norm = combined.sqr().map_err(Either::Right)?
-                .sum_keepdim(0).map_err(Either::Right)?
-                .sqrt().map_err(Either::Right)?;
+            let norm = combined
+                .sqr()
+                .map_err(Either::Right)?
+                .sum_keepdim(0)
+                .map_err(Either::Right)?
+                .sqrt()
+                .map_err(Either::Right)?;
             // Add epsilon to avoid division by zero
             let norm = (norm + 1e-8).map_err(Either::Right)?;
 
@@ -137,7 +144,11 @@ impl Merge for LoraLinear {
             let normalized = combined.broadcast_div(&norm).map_err(Either::Right)?;
 
             // Apply magnitude scaling and subtract original weight to get delta
-            let scaled = normalized.broadcast_mul(magnitude).map_err(Either::Right)?;
+            // Reshape magnitude from [out_features] to [out_features, 1] for broadcasting
+            let magnitude_reshaped = magnitude.unsqueeze(1).map_err(Either::Right)?;
+            let scaled = normalized
+                .broadcast_mul(&magnitude_reshaped)
+                .map_err(Either::Right)?;
             (scaled - self.old.weight()).map_err(Either::Right)
         } else {
             // Standard LoRA
@@ -221,8 +232,11 @@ impl Module for LoraLinear {
                     input.clone()
                 };
 
-                result =
-                    (result + self.ff_b.forward(&self.ff_a.forward(&input_new)?))?.mul(scale)?;
+                let lora_delta = self
+                    .ff_b
+                    .forward(&self.ff_a.forward(&input_new)?)?
+                    .mul(scale)?;
+                result = (result + lora_delta)?;
             }
             Ok(result)
         }

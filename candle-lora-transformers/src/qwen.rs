@@ -1,3 +1,5 @@
+//! Qwen LLM, https://github.com/QwenLM/Qwen
+
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_lora::LoraConfig;
 use candle_lora_macro::{replace_layer_fields, AutoLoraConvert};
@@ -7,7 +9,6 @@ use std::sync::Arc;
 
 use crate::with_tracing::{linear, linear_no_bias, TracedLoraLinear};
 
-/// Qwen3 model configuration
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Config {
     pub vocab_size: usize,
@@ -29,39 +30,17 @@ pub struct Config {
 }
 
 impl Config {
-    /// Configuration for Qwen3-7B model
-    pub fn qwen3_7b(use_flash_attn: bool) -> Self {
+    pub fn config_8b(use_flash_attn: bool) -> Self {
         Self {
-            vocab_size: 152064,
-            hidden_size: 3584,
-            intermediate_size: 18944,
-            num_hidden_layers: 28,
-            num_attention_heads: 28,
-            num_key_value_heads: 4,
-            max_position_embeddings: 32768,
-            sliding_window: Some(32768),
-            max_window_layers: 28,
-            tie_word_embeddings: false,
-            rope_theta: 1000000.0,
-            rms_norm_eps: 1e-6,
-            use_sliding_window: false,
-            hidden_act: Activation::Swiglu,
-            use_flash_attn,
-        }
-    }
-
-    /// Configuration for Qwen3-14B model
-    pub fn qwen3_14b(use_flash_attn: bool) -> Self {
-        Self {
-            vocab_size: 152064,
-            hidden_size: 5120,
-            intermediate_size: 13696,
-            num_hidden_layers: 40,
-            num_attention_heads: 40,
+            vocab_size: 151936,
+            hidden_size: 4096,
+            intermediate_size: 12288,
+            num_hidden_layers: 36,
+            num_attention_heads: 32,
             num_key_value_heads: 8,
             max_position_embeddings: 32768,
-            sliding_window: Some(32768),
-            max_window_layers: 40,
+            sliding_window: None,
+            max_window_layers: 36,
             tie_word_embeddings: false,
             rope_theta: 1000000.0,
             rms_norm_eps: 1e-6,
@@ -436,7 +415,7 @@ impl Qwen3 {
         let (_b_sz, seq_len) = input_ids.dims2()?;
         let mut xs = self.embed_tokens.forward(input_ids)?;
 
-        // For now, using a simple causal mask
+        // Simple causal mask
         let mask: Option<Tensor> = if seq_len > 1 {
             Some(self.make_causal_mask(seq_len)?)
         } else {

@@ -21,10 +21,8 @@ fn test_traced_lora_linear_uses_adapter() -> Result<()> {
     let out_size = 32;
     let batch_size = 1;
 
-    // Create input
     let input = Tensor::randn(0f32, 1.0, (batch_size, in_size), &device)?;
 
-    // Create base model using plain linear
     let base_varmap = VarMap::new();
     let base_vb = VarBuilder::from_varmap(&base_varmap, dtype, &device);
     let base_weight = base_vb.get_with_hints(
@@ -40,7 +38,6 @@ fn test_traced_lora_linear_uses_adapter() -> Result<()> {
 
     println!("Base output shape: {:?}", base_output.shape());
 
-    // Create LoRA config
     let lora_config = LoraConfig::new(8, 16.0, None);
 
     // Create VarBuilder with LoRA weights
@@ -73,29 +70,14 @@ fn test_traced_lora_linear_uses_adapter() -> Result<()> {
 
     println!("Traced LoRA output shape: {:?}", traced_output.shape());
 
-    // Compute difference
     let diff = ((&traced_output - &base_output)?.abs()?.sum_all()?).to_scalar::<f32>()?;
 
     println!("Difference between base and TracedLoraLinear: {}", diff);
 
-    // The outputs MUST be different if LoRA is working
-    assert!(
-        diff > 1e-6,
-        "TracedLoraLinear did not change the output! \
-         This indicates that LoRA weights are not being applied. \
-         Difference: {}",
-        diff
-    );
-
     // Verify difference is significant
-    assert!(
-        diff > 0.01,
-        "TracedLoraLinear difference is too small ({}). \
-         LoRA weights may not be properly applied.",
-        diff
-    );
+    assert!(diff > 0.01, "LoRA weights not applied; diff={}", diff);
 
-    println!("✅ Test passed: TracedLoraLinear successfully uses LoRA adapter");
+    println!("Test passed: TracedLoraLinear successfully uses LoRA adapter");
     Ok(())
 }
 
@@ -116,9 +98,6 @@ fn test_qwen_model_logits_change_with_adapter() -> Result<()> {
     let out_size = 32;
     let rank = 4;
 
-    println!("🔧 Testing that LoRA weights are actually used in with_tracing::linear...");
-
-    // Create input
     let input = Tensor::randn(0f32, 1.0, (1, in_size), &device)?;
 
     // Model 1: VarMap WITHOUT explicit LoRA weights (B will default to zeros)
@@ -129,7 +108,7 @@ fn test_qwen_model_logits_change_with_adapter() -> Result<()> {
     let layer1 = with_tracing::linear(in_size, out_size, vb1, false, lora_config1)?;
     let output1 = layer1.forward(&input)?;
     let sum1 = output1.abs()?.sum_all()?.to_scalar::<f32>()?;
-    println!("   Model without explicit LoRA weights sum: {}", sum1);
+    println!("Model without explicit LoRA weights sum: {}", sum1);
 
     // Model 2: VarMap WITH explicit non-zero LoRA weights added BEFORE creating layer
     let varmap2 = VarMap::new();
@@ -157,23 +136,22 @@ fn test_qwen_model_logits_change_with_adapter() -> Result<()> {
     let layer2 = with_tracing::linear(in_size, out_size, vb2, false, lora_config2)?;
     let output2 = layer2.forward(&input)?;
     let sum2 = output2.abs()?.sum_all()?.to_scalar::<f32>()?;
-    println!("   Model with LoRA adapter sum: {}", sum2);
+    println!("Model with LoRA adapter sum: {}", sum2);
 
     // Compare outputs
     let diff = ((&output2 - &output1)?.abs()?.sum_all()?).to_scalar::<f32>()?;
-    println!("📊 Absolute difference: {}", diff);
+    println!("Absolute difference: {}", diff);
 
-    // Outputs MUST be different if LoRA is working
+    // Outputs must be different if LoRA is working
     assert!(
         diff > 0.01,
-        "❌ CRITICAL: LoRA adapter weights did NOT affect output! \
+        "LoRA adapter weights did not affect output as expected. \
          Difference: {}, Model1 sum: {}, Model2 sum: {}",
         diff,
         sum1,
         sum2
     );
 
-    println!("✅ Test passed: LoRA adapters successfully modify model outputs!");
-    println!("   This confirms LoRA weights are properly loaded and applied.");
+    println!("Test passed: LoRA adapters modify model outputs.");
     Ok(())
 }

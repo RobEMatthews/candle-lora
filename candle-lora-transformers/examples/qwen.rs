@@ -1,7 +1,3 @@
-// An implementation of Qwen for testing with LoRA adapters
-//
-// This example demonstrates how to load a base Qwen model and apply LoRA adapters
-
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
@@ -49,7 +45,7 @@ struct Args {
     #[arg(long)]
     prompt: Option<String>,
 
-    /// Use different dtype than bf16
+    /// Use different dtype than bf16 (tests fail otherwise -- to check)
     #[arg(long)]
     dtype: Option<String>,
 
@@ -93,13 +89,10 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    println!("\n🚀 Qwen + LoRA Adapter Full Test");
-    println!("============================================================");
     println!("Base model: {}", args.base_model);
     println!("Adapter: {}", args.adapter);
     println!("LoRA config: rank={}, alpha={}", args.rank, args.alpha);
     println!("Merge weights: {}", args.merge);
-    println!("============================================================\n");
 
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
@@ -118,26 +111,26 @@ fn main() -> Result<()> {
         None => DType::BF16,
     };
 
-    println!("📱 Device: {:?}, DType: {:?}\n", device, dtype);
+    println!("Device: {:?}, DType: {:?}\n", device, dtype);
 
     // Load config
-    println!("📋 Loading model config...");
+    println!("Loading model config...");
     let config_path = PathBuf::from(&args.base_model).join("config.json");
     let config_json = fs::read_to_string(config_path)?;
     let config: Config = serde_json::from_str(&config_json)?;
-    println!("✅ Config loaded:");
+    println!("Config loaded:");
     println!("   - Hidden size: {}", config.hidden_size);
     println!("   - Num layers: {}", config.num_hidden_layers);
     println!("   - Vocab size: {}\n", config.vocab_size);
 
     // Load tokenizer
-    println!("🔤 Loading tokenizer...");
+    println!("Loading tokenizer...");
     let tokenizer_path = PathBuf::from(&args.base_model).join("tokenizer.json");
     let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
-    println!("✅ Tokenizer loaded\n");
+    println!("Tokenizer loaded\n");
 
     // Find all model safetensors files
-    println!("📦 Loading base model weights...");
+    println!("Loading base model weights...");
     let model_dir = PathBuf::from(&args.base_model);
     let mut model_files = Vec::new();
 
@@ -156,14 +149,14 @@ fn main() -> Result<()> {
         bail!("No model safetensors files found in {}", args.base_model);
     }
 
-    println!("✅ Found {} model file(s):", model_files.len());
+    println!("Found {} model file(s):", model_files.len());
     for file in &model_files {
         println!("   - {}", file.display());
     }
     println!();
 
     // Combine base model files + adapter
-    println!("📦 Loading base model + adapter weights into combined VarBuilder...");
+    println!("Loading base model + adapter weights into combined VarBuilder...");
     let mut all_files = model_files.clone();
     all_files.push(PathBuf::from(&args.adapter));
 
@@ -173,7 +166,7 @@ fn main() -> Result<()> {
     }
 
     let vb = from_mmaped_safetensors(&all_files, dtype, &device, false)?;
-    println!("✅ Combined VarBuilder created with base + adapter weights\n");
+    println!("Combined VarBuilder created with base + adapter weights\n");
 
     // Create LoRA config
     let lora_config = LoraConfig::new(args.rank, args.alpha, None);
@@ -183,14 +176,14 @@ fn main() -> Result<()> {
     let model = Qwen3::new(&config, vb, args.merge, lora_config)?;
 
     if args.merge {
-        println!("✅ Model created with merged adapter weights (adapter baked into base)\n");
+        println!("Model created with merged adapter weights (adapter baked into base)\n");
     } else {
-        println!("✅ Model created with separate adapter weights\n");
+        println!("Model created with separate adapter weights\n");
     }
 
     // Tokenize prompt
     let prompt = args.prompt.as_ref().map_or(DEFAULT_PROMPT, |p| p.as_str());
-    println!("💬 Prompt: {:?}", prompt);
+    println!("Prompt: {:?}", prompt);
 
     let mut tokens = tokenizer
         .encode(prompt, true)
@@ -198,13 +191,12 @@ fn main() -> Result<()> {
         .get_ids()
         .to_vec();
 
-    println!("✅ Tokenized: {} tokens\n", tokens.len());
+    println!("Tokenized: {} tokens\n", tokens.len());
 
     let eos_token_id = tokenizer.token_to_id(EOS_TOKEN);
 
     // Generate
-    println!("🎯 Generating {} tokens...", args.sample_len);
-    println!("------------------------------------------------------------");
+    println!("Generating {} tokens...", args.sample_len);
     print!("{}", prompt);
     std::io::stdout().flush()?;
 
@@ -244,9 +236,8 @@ fn main() -> Result<()> {
     }
 
     let dt = start_gen.elapsed();
-    println!("\n------------------------------------------------------------");
     println!(
-        "\n✅ Generated {} tokens in {:.2}s ({:.2} token/s)\n",
+        "\nGenerated {} tokens in {:.2}s ({:.2} token/s)\n",
         token_generated,
         dt.as_secs_f64(),
         token_generated as f64 / dt.as_secs_f64(),

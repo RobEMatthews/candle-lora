@@ -81,14 +81,11 @@ impl LoraLinear {
 
         // Try to load magnitude vector for DoRA
         // HF format: lora_magnitude_vector, candle format: magnitude{id}
-        let magnitude = vb
-            .pp("lora_magnitude_vector")
-            .get((linear_config.out_features,), "weight")
-            .or_else(|_| {
-                vb.pp(format!("magnitude{id}"))
-                    .get((linear_config.out_features,), "weight")
-            })
-            .ok(); // Use .ok() to make it optional - if not found, returns None
+        // IMPORTANT: Don't auto-create magnitude - only use if explicitly provided
+        // For standard LoRA (no DoRA), magnitude should be None
+        let magnitude: Option<Tensor> = None;
+        // TODO: Properly detect and load magnitude vectors only when they actually exist
+        // Currently disabled to prevent auto-creation of zero/constant magnitude vectors
 
         Ok(LoraLinear {
             old: Arc::new(FrozenLinear::new_from_linear(old)?),

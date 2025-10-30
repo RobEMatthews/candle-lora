@@ -24,6 +24,7 @@ pub struct Config {
     pub rms_norm_eps: f64,
     pub use_sliding_window: bool,
     pub hidden_act: Activation,
+    #[serde(default)]
     pub use_flash_attn: bool,
 }
 
@@ -222,13 +223,16 @@ impl Attention {
 
         let query_states = query_states
             .reshape((b_sz, q_len, self.num_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
         let key_states = key_states
             .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
         let value_states = value_states
             .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
 
         let (query_states, key_states) = self
             .rotary_emb
@@ -271,14 +275,14 @@ impl Attention {
 /// Feed-forward network with LoRA support
 #[derive(Debug, AutoLoraConvert)]
 #[replace_layer_fields]
-struct MLP {
+struct Mlp {
     gate_proj: TracedLoraLinear,
     up_proj: TracedLoraLinear,
     down_proj: TracedLoraLinear,
     act_fn: Activation,
 }
 
-impl MLP {
+impl Mlp {
     fn new(cfg: &Config, vb: VarBuilder, merge: bool, lora_config: LoraConfig) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
@@ -314,7 +318,7 @@ impl MLP {
     }
 }
 
-impl Module for MLP {
+impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let lhs = self.gate_proj.forward(xs)?.apply(&self.act_fn)?;
         let rhs = self.up_proj.forward(xs)?;
@@ -327,7 +331,7 @@ impl Module for MLP {
 #[replace_layer_fields]
 struct DecoderLayer {
     self_attn: Attention,
-    mlp: MLP,
+    mlp: Mlp,
     input_layernorm: RmsNorm,
     post_attention_layernorm: RmsNorm,
 }
@@ -347,7 +351,7 @@ impl DecoderLayer {
             merge,
             lora_config.clone(),
         )?;
-        let mlp = MLP::new(cfg, vb.pp("mlp"), merge, lora_config)?;
+        let mlp = Mlp::new(cfg, vb.pp("mlp"), merge, lora_config)?;
         let input_layernorm =
             RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         let post_attention_layernorm = RmsNorm::new(
